@@ -142,6 +142,7 @@ struct opts {
 	char *args;
 	char *retval;
 	char *diff;
+	char *patch;
 	int mode;
 	int idx;
 	int depth;

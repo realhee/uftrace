@@ -144,6 +144,9 @@ static void setup_child_environ(struct opts *opts, int pfd)
 	if (opts->retval)
 		setenv("UFTRACE_RETVAL", opts->retval, 1);
 
+	if (opts->patch)
+		setenv("UFTRACE_PATCH", opts->patch, 1);
+
 	if (opts->depth != OPT_DEPTH_DEFAULT) {
 		snprintf(buf, sizeof(buf), "%d", opts->depth);
 		setenv("UFTRACE_DEPTH", buf, 1);

@@ -684,6 +684,11 @@ static void build_debug_domain(char *dbg_domain_str)
 	}
 }
 
+__weak int mcount_arch_dynamic_update(struct symtabs *symtabs, char *patch_funcs)
+{
+	return 0;
+}
+
 /*
  * external interfaces
  */
@@ -697,6 +702,7 @@ void __visible_default __monstartup(unsigned long low, unsigned long high)
 	char *threshold_str;
 	char *color_str;
 	char *demangle_str;
+	char *patch_str;
 	char *dirname;
 	struct stat statbuf;
 	LIST_HEAD(modules);
@@ -717,6 +723,7 @@ void __visible_default __monstartup(unsigned long low, unsigned long high)
 	color_str = getenv("UFTRACE_COLOR");
 	threshold_str = getenv("UFTRACE_THRESHOLD");
 	demangle_str = getenv("UFTRACE_DEMANGLE");
+	patch_str = getenv("UFTRACE_PATCH");
 
 	if (logfd_str) {
 		int fd = strtol(logfd_str, NULL, 0);
@@ -794,6 +801,9 @@ void __visible_default __monstartup(unsigned long low, unsigned long high)
 
 	if (threshold_str)
 		mcount_threshold = strtoull(threshold_str, NULL, 0);
+
+	if (patch_str)
+		mcount_arch_dynamic_update(&symtabs, patch_str);
 
 	if (getenv("UFTRACE_PLTHOOK")) {
 		if (symtabs.loaded && symtabs.dsymtab.nr_sym == 0) {
