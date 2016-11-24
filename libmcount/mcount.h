@@ -207,6 +207,8 @@ extern void mcount_arch_get_arg(struct mcount_arg_context *ctx,
 extern void mcount_arch_get_retval(struct mcount_arg_context *ctx,
 				   struct ftrace_arg_spec *spec);
 
+extern int mcount_arch_dynamic_update(struct symtabs *symtabs, char *patch_funcs);
+
 extern enum filter_result mcount_entry_filter_check(struct mcount_thread_data *mtdp,
 						    unsigned long child,
 						    struct ftrace_trigger *tr);
