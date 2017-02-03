@@ -253,7 +253,7 @@ static int load_symtab(struct symtab *symtab, const char *filename,
 	if (sym_data == NULL)
 		goto elf_error;
 
-	pr_dbg2("loading symbols from %s\n", filename);
+	pr_dbg("loading symbols from %s\n", filename);
 	for (i = 0; i < nr_sym; i++) {
 		GElf_Sym elf_sym;
 		struct sym *sym;
@@ -318,6 +318,8 @@ static int load_symtab(struct symtab *symtab, const char *filename,
 	if (symtab->nr_sym == 0)
 		goto out;
 
+	nr_sym = symtab->nr_sym;
+	pr_dbg("symtab found %u symbols\n", symtab->nr_sym);
 	qsort(symtab->sym, symtab->nr_sym, sizeof(*symtab->sym), addrsort);
 
 	/* remove duplicated (overlapped?) symbols */
@@ -341,6 +343,16 @@ static int load_symtab(struct symtab *symtab, const char *filename,
 	}
 	symtab->nr_alloc = symtab->nr_sym;
 	symtab->sym = xrealloc(symtab->sym, symtab->nr_sym * sizeof(*symtab->sym));
+
+	if (nr_sym != symtab->nr_sym) {
+		pr_dbg("symtab has %u symbols finally\n", symtab->nr_sym);
+		for (i = 0; i < symtab->nr_sym; i++) {
+			struct sym *sym = &symtab->sym[i];
+
+			printf("[%zd] %#lx: %s (%u)\n", i,
+			       sym->addr, sym->name, sym->size);
+		}
+	}
 
 	symtab->sym_names = xmalloc(sizeof(*symtab->sym_names) * symtab->nr_sym);
 

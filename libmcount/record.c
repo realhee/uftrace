@@ -561,6 +561,7 @@ void record_proc_maps(char *dirname, const char *sess_id,
 		map->next = NULL;
 		prev_map = map;
 
+		pr_dbg("map: %lx-%lx %s\n", start, end, path);
 next:
 		fprintf(ofp, "%s", buf);
 	}
