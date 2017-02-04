@@ -16,6 +16,7 @@
 #include <sys/ioctl.h>
 #include <sys/eventfd.h>
 #include <sys/resource.h>
+#include <sys/epoll.h>
 
 #include "uftrace.h"
 #include "libmcount/mcount.h"
@@ -48,8 +49,8 @@ static LIST_HEAD(writer_list);
 
 static pthread_mutex_t free_list_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t write_list_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t write_cond = PTHREAD_COND_INITIALIZER;
 static bool buf_done;
+static int thread_fd;
 
 
 static bool can_use_fast_libmcount(struct opts *opts)
@@ -399,7 +400,10 @@ void *writer_thread(void *arg)
 	struct buf_list *buf, *pos;
 	struct writer_arg *warg = arg;
 	struct opts *opts = warg->opts;
-	int i;
+	struct epoll_event ev[warg->nr_cpu + 1];
+	int epfd;
+	int i, n;
+	uint64_t dummy;
 
 	if (opts->rt_prio) {
 		struct sched_param param = {
@@ -410,39 +414,50 @@ void *writer_thread(void *arg)
 			pr_log("set scheduling param failed\n");
 	}
 
+	epfd = epoll_create1(EPOLL_CLOEXEC);
+	if (epfd < 0)
+		pr_err("cannot create epoll fd for writer thread");
+
+	ev[0].events = EPOLLIN;
+	ev[0].data.ptr = warg;
+	if (epoll_ctl(epfd, EPOLL_CTL_ADD, thread_fd, &ev[0]) < 0) {
+		/* it might be started too late */
+		if (thread_fd != -1)
+			pr_dbg("adding epoll event failed");
+
+		goto out;
+	}
+
+	for (i = 0; i < warg->nr_cpu; i++) {
+		ev[0].events = EPOLLIN;
+		ev[0].data.u32 = warg->cpus[i];
+		if (epoll_ctl(epfd, EPOLL_CTL_ADD,
+			      warg->kern->traces[warg->cpus[i]], &ev[0]) < 0)
+			pr_err("adding epoll event failed");
+	}
+
 	pr_dbg2("start writer thread %d\n", warg->idx);
-	while (true) {
+	while (!buf_done) {
 		LIST_HEAD(head);
+		bool check_list = false;
+
+		n = epoll_wait(epfd, ev, warg->nr_cpu + 1, 100);
+		for (i = 0; i < n; i++) {
+			if (ev[i].data.ptr == warg && (ev[i].events & EPOLLIN))
+				check_list = true;
+			else
+				record_kernel_trace_pipe(warg->kern,
+							 ev[i].data.u32);
+		}
+
+		if (!check_list)
+			continue;
+
+		if (read(thread_fd, &dummy, sizeof(dummy)) < 0 &&
+		    errno != EAGAIN && errno != EINTR)
+			break;
 
 		pthread_mutex_lock(&write_list_lock);
-		while (list_empty(&buf_write_list)) {
-			struct timespec timeout;
-
-			if (buf_done) {
-				pthread_mutex_unlock(&write_list_lock);
-				/* escape from nested loop */
-				goto out;
-			}
-
-			/* check kernel data every 1ms */
-			clock_gettime(CLOCK_REALTIME, &timeout);
-			if (opts->kernel) {
-				timeout.tv_nsec += 100000;
-
-				if (timeout.tv_nsec > NSEC_PER_SEC) {
-					timeout.tv_nsec -= NSEC_PER_SEC;
-					timeout.tv_sec++;
-				}
-			}
-			else {
-				timeout.tv_sec++;
-			}
-
-			pthread_cond_timedwait(&write_cond, &write_list_lock,
-					       &timeout);
-			if (opts->kernel)
-				break;
-		}
 
 		if (!list_empty(&buf_write_list)) {
 			/* pick first unhandled buf  */
@@ -462,13 +477,6 @@ void *writer_thread(void *arg)
 
 		pthread_mutex_unlock(&write_list_lock);
 
-		if (opts->kernel) {
-			for (i = 0; i < warg->nr_cpu; i++) {
-				record_kernel_trace_pipe(warg->kern,
-							 warg->cpus[i]);
-			}
-		}
-
 		while (!list_empty(&head)) {
 			write_buf_list(&head, opts, warg);
 
@@ -486,15 +494,21 @@ void *writer_thread(void *arg)
 			if (!opts->kernel)
 				continue;
 
-			for (i = 0; i < warg->nr_cpu; i++) {
+			n = epoll_wait(epfd, ev, warg->nr_cpu, 0);
+			for (i = 0; i < n; i++) {
+				/* skip user shmem buffers for now */
+				if (ev[i].data.ptr == warg)
+					continue;
+
 				record_kernel_trace_pipe(warg->kern,
-							 warg->cpus[i]);
+							 ev[i].data.u32);
 			}
 		}
 	}
-out:
 	pr_dbg2("stop writer thread %d\n", warg->idx);
 
+out:
+	close(epfd);
 	free(warg);
 	return NULL;
 }
@@ -545,9 +559,11 @@ static void copy_to_buffer(struct mcount_shmem_buffer *shm, char *sess_id)
 		}
 	}
 	if (list_no_entry(writer, &writer_list, list)) {
+		uint64_t kick = 1;
+
 		/* no writer is dealing with the tid */
 		list_add_tail(&buf->list, &buf_write_list);
-		pthread_cond_signal(&write_cond);
+		write(thread_fd, &kick, sizeof(kick));
 	}
 	pthread_mutex_unlock(&write_list_lock);
 }
@@ -605,10 +621,9 @@ static int record_mmap_file(const char *dirname, char *sess_id, int bufsize)
 
 static void stop_all_writers(void)
 {
-	pthread_mutex_lock(&write_list_lock);
 	buf_done = true;
-	pthread_cond_broadcast(&write_cond);
-	pthread_mutex_unlock(&write_list_lock);
+	close(thread_fd);
+	thread_fd = -1;
 }
 
 static void record_remaining_buffer(struct opts *opts, int sock)
@@ -1440,6 +1455,15 @@ int command_record(int argc, char *argv[], struct opts *opts)
 	pr_dbg("creating %d thread(s) for recording\n", opts->nr_thread);
 	writers = xmalloc(opts->nr_thread * sizeof(*writers));
 
+	thread_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (thread_fd < 0)
+		pr_err("cannot create an eventfd for writer thread");
+
+	if (opts->kernel && start_kernel_tracing(&kern) < 0) {
+		opts->kernel = false;
+		pr_log("kernel tracing disabled due to an error\n");
+	}
+
 	for (i = 0; i < opts->nr_thread; i++) {
 		struct writer_arg *warg;
 		int cpu_per_thread = DIV_ROUND_UP(nr_cpu, opts->nr_thread);
@@ -1450,6 +1474,7 @@ int command_record(int argc, char *argv[], struct opts *opts)
 		warg->idx  = i;
 		warg->sock = sock;
 		warg->kern = &kern;
+		warg->nr_cpu = 0;
 		INIT_LIST_HEAD(&warg->list);
 		INIT_LIST_HEAD(&warg->bufs);
 
@@ -1465,11 +1490,6 @@ int command_record(int argc, char *argv[], struct opts *opts)
 		}
 
 		pthread_create(&writers[i], NULL, writer_thread, warg);
-	}
-
-	if (opts->kernel && start_kernel_tracing(&kern) < 0) {
-		opts->kernel = false;
-		pr_log("kernel tracing disabled due to an error\n");
 	}
 
 	/* signal child that I'm ready */
