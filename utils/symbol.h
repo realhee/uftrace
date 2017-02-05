@@ -70,13 +70,15 @@ struct symtabs {
 
 #if __SIZEOF_LONG__ == 8
 # define KADDR_SHIFT  47
+# define KADDR_START  (1UL << KADDR_SHIFT)
 #else
 # define KADDR_SHIFT  31
+# define KADDR_START  0xC0000000UL
 #endif
 
 static inline bool is_kernel_address(unsigned long addr)
 {
-	return !!(addr & (1UL << KADDR_SHIFT));
+	return addr >= KADDR_START;
 }
 unsigned long get_real_address(unsigned long addr);
 
