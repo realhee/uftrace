@@ -1325,6 +1325,8 @@ struct sym * find_symtabs(struct symtabs *symtabs, unsigned long addr)
 	if (sym)
 		return sym;
 
+	pr_dbg("couldn't find symbol from address: %lx\n", addr);
+
 	maps = symtabs->maps;
 	while (maps) {
 		if (maps->start <= addr && addr < maps->end)
@@ -1334,6 +1336,9 @@ struct sym * find_symtabs(struct symtabs *symtabs, unsigned long addr)
 	}
 
 	if (maps) {
+		pr_dbg("found a map: %s (%zd symbols)\n",
+		       maps->libname, maps->symtab.nr_sym);
+
 		if (maps->symtab.nr_sym == 0) {
 			bool found = false;
 
